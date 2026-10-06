@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MQTT 智慧物聯網儀表板 (自動燈控 & 日夜天空模擬)</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- MQTT.js (WebSocket Client) -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+        /* Bounce animation for Emoji */
+        @keyframes bounce-subtle {
+            0%, 100% { transform: translateY(0) scale(1); }
+            50% { transform: translateY(-4px) scale(1.05); }
+        }
+        .animate-emoji {
+            display: inline-block;
+            animation: bounce-subtle 2s infinite ease-in-out;
+        }
+
+        /* Drifting Clouds Animation */
+        @keyframes float-cloud-1 {
+            0% { transform: translateX(-10%); }
+            50% { transform: translateX(10%); }
+            100% { transform: translateX(-10%); }
+        }
+        @keyframes float-cloud-2 {
+            0% { transform: translateX(15%); }
+            50% { transform: translateX(-15%); }
+            100% { transform: translateX(15%); }
+        }
+        .animate-cloud-1 { animation: float-cloud-1 18s ease-in-out infinite; }
+        .animate-cloud-2 { animation: float-cloud-2 24s ease-in-out infinite; }
+
+        /* Twinkling Stars Animation */
+        @keyframes pulse-star {
+            0%, 100% { opacity: 0.3; transform: scale(0.8); }
+            50% { opacity: 1; transform: scale(1.2); }
+        }
+        .animate-star { animation: pulse-star 3s ease-in-out infinite; }
+        .animate-star-fast { animation: pulse-star 1.8s ease-in-out infinite; }
+
+        /* Smooth Sky Background Color Transitions */
+        .sky-transition {
+            transition: background 1.2s ease-in-out, border-color 1.2s ease-in-out, box-shadow 1.2s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-200 h-full flex flex-col antialiased selection:bg-indigo-500 selection:text-white overflow-hidden">
+
+    <header class="bg-slate-800 border-b border-slate-700 shrink-0 px-6 py-3.5 flex flex-wrap justify-between items-center gap-4 shadow-md">
+        <div class="flex items-center space-x-3">
+            <div class="bg-indigo-600 p-2.5 rounded-lg shadow-lg shadow-indigo-500/20 flex items-center justify-center">
+                <i class="fa-solid fa-cloud-sun text-white text-lg"></i>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold tracking-tight text-white">MQTT 智慧儀表板</h1>
+                <p class="text-xs text-slate-400">自動燈控 • 日夜動態天空 • 空氣質素監測 • 雙儀表板 • 趨勢分析</p>
+            </div>
+        </div>
+        <div class="flex items-center space-x-3">
+            <div id="statusBadge" class="flex items-center space-x-2 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-full text-xs font-medium shadow-inner transition-colors">
+                <span id="statusIndicator" class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
+                <span id="statusText" class="text-slate-300">未連線</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="flex-1 overflow-y-auto p-4 md:p-6 w-full grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        <!-- Left Sidebar: Settings, Light Switch, Auto Light Control, Publish & Logs -->
+        <div class="space-y-6 lg:col-span-4 xl:col-span-3">
+            
+            <!-- Connection Setup Panel -->
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg">
+                <h2 class="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+                    <i class="fa-solid fa-server text-indigo-400"></i> 連線設定
+                </h2>
+                <form id="connectionForm" class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">WebSocket URL</label>
+                        <input type="text" id="brokerUrl" value="wss://iot.kittenbot.cn/mqtt" 
+                            class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 transition">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">Client ID</label>
+                        <input type="text" id="clientId" value="dashboard_client" 
+                            class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 transition">
+                    </div>
+                    <div class="pt-2 flex gap-3">
+                        <button type="submit" id="connectBtn" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2 px-4 rounded-lg text-sm transition shadow shadow-indigo-600/20 flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-link"></i> 連線
+                        </button>
+                        <button type="button" id="disconnectBtn" disabled class="flex-1 bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium py-2 px-4 rounded-lg text-sm transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-link-slash"></i> 斷線
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Device Control Panel (Meowpoet/light) -->
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg space-y-4">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-sm font-semibold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-gamepad text-emerald-400"></i> 燈光控制 (Meowpoet/light)
+                    </h2>
+                    <span id="lightStateTag" class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-700 text-slate-400 uppercase">
+                        狀態: 未知
+                    </span>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-3">
+                    <button type="button" id="btnLightOn" disabled class="bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2.5 px-4 rounded-lg text-sm transition shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                        <i class="fa-solid fa-lightbulb"></i> 開燈 (ON)
+                    </button>
+                    <button type="button" id="btnLightOff" disabled class="bg-rose-600 hover:bg-rose-500 text-white font-medium py-2.5 px-4 rounded-lg text-sm transition shadow-lg shadow-rose-600/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                        <i class="fa-regular fa-lightbulb"></i> 關燈 (OFF)
+                    </button>
+                </div>
+
+                <!-- Automatic Light Control Section -->
+                <div class="border-t border-slate-700/80 pt-3 mt-3">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-2">
+                            <i class="fa-solid fa-robot text-amber-400"></i>
+                            <span class="text-xs font-semibold text-slate-200">智慧自動燈控</span>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="autoLightToggle" class="sr-only peer">
+                            <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+                        </label>
+                    </div>
+
+                    <p class="text-[11px] text-slate-400 mb-3">
+                        當檢測亮度低於門檻自動開燈，高於/等於門檻自動關燈。
+                    </p>
+
+                    <div class="bg-slate-900/80 rounded-lg p-3 border border-slate-700 space-y-2">
+                        <div class="flex justify-between items-center text-xs">
+                            <span class="text-slate-400 font-medium">開燈門檻值 (Lux):</span>
+                            <span id="autoThresholdDisplay" class="font-bold text-amber-400 font-mono">1000</span>
+                        </div>
+                        <input type="range" id="autoThresholdInput" min="100" max="3500" step="50" value="1000" 
+                            class="w-full accent-amber-400 cursor-pointer h-1.5 bg-slate-700 rounded-lg">
+                        <div class="flex justify-between text-[10px] text-slate-500 font-mono">
+                            <span>100 (極暗)</span>
+                            <span>2000 (明亮)</span>
+                            <span>3500 (極亮)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Custom Topic Publisher -->
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg">
+                <h2 class="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+                    <i class="fa-solid fa-paper-plane text-sky-400"></i> 自訂發布 (Publish)
+                </h2>
+                <form id="publishForm" class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">目標 Topic</label>
+                        <input type="text" id="pubTopic" value="Meowpoet/brightness" 
+                            class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500 transition">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">訊息內容 (Payload)</label>
+                        <textarea id="pubPayload" rows="2" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500 transition font-mono">3500</textarea>
+                    </div>
+                    <button type="submit" id="publishBtn" disabled class="w-full bg-sky-600 hover:bg-sky-500 text-white font-medium py-2 px-4 rounded-lg text-sm transition shadow shadow-sky-600/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                        <i class="fa-solid fa-upload"></i> 發送訊息
+                    </button>
+                </form>
+            </div>
+
+            <!-- System Message Logs -->
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-md flex flex-col h-64">
+                <div class="flex justify-between items-center mb-3 shrink-0">
+                    <h2 class="text-sm font-semibold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-terminal text-slate-400"></i> 訊息日誌 (Logs)
+                    </h2>
+                    <button id="clearLogsBtn" class="text-xs text-slate-400 hover:text-white transition">
+                        <i class="fa-solid fa-trash-can"></i> 清空
+                    </button>
+                </div>
+                <div id="logContainer" class="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-3 font-mono text-[11px] overflow-y-auto space-y-1.5 select-text">
+                    <div class="text-slate-500">系統已就緒。點擊「連線」以開始接收數據。</div>
+                </div>
+            </div>
+
+        </div>
+
+        <div class="space-y-6 lg:col-span-8 xl:col-span-9 flex flex-col h-full">
+            
+            <!-- Dynamic Day/Night Atmospheric Sky Simulator Banner -->
+            <div id="skyBanner" class="sky-transition bg-gradient-to-r from-sky-500 via-sky-400 to-blue-600 border border-sky-300/30 rounded-2xl p-6 shadow-xl relative overflow-hidden text-white min-h-[170px] flex flex-col justify-between">
+                
+                <!-- Background Decorative Layer (Clouds, Sun/Moon, Stars) -->
+                <div class="absolute inset-0 pointer-events-none overflow-hidden">
+                    <!-- Day Celestial (Sun & Clouds) -->
+                    <div id="skyDayLayer" class="absolute inset-0 transition-opacity duration-1000 opacity-100">
+                        <div class="absolute -top-6 -right-6 w-32 h-32 bg-amber-200/40 rounded-full blur-2xl"></div>
+                        <i class="fa-solid fa-sun text-yellow-300 text-6xl absolute top-4 right-8 drop-shadow-[0_0_15px_rgba(253,224,71,0.8)]"></i>
+                        <i class="fa-solid fa-cloud text-white/80 text-5xl absolute top-8 left-1/4 animate-cloud-1 drop-shadow"></i>
+                        <i class="fa-solid fa-cloud text-white/60 text-4xl absolute bottom-3 left-2/3 animate-cloud-2 drop-shadow"></i>
+                    </div>
+
+                    <!-- Twilight Layer -->
+                    <div id="skyTwilightLayer" class="absolute inset-0 transition-opacity duration-1000 opacity-0">
+                        <div class="absolute top-0 right-1/4 w-40 h-40 bg-orange-400/30 rounded-full blur-3xl"></div>
+                        <i class="fa-solid fa-sun text-amber-400 text-6xl absolute top-8 right-12 drop-shadow-[0_0_20px_rgba(251,191,36,0.9)]"></i>
+                        <i class="fa-solid fa-cloud text-orange-100/40 text-5xl absolute top-4 left-1/3 animate-cloud-1"></i>
+                    </div>
+
+                    <!-- Night Layer (Moon & Stars) -->
+                    <div id="skyNightLayer" class="absolute inset-0 transition-opacity duration-1000 opacity-0">
+                        <i class="fa-solid fa-moon text-slate-100 text-5xl absolute top-5 right-10 drop-shadow-[0_0_18px_rgba(255,255,255,0.9)]"></i>
+                        <i class="fa-solid fa-star text-amber-200 text-xs absolute top-4 left-12 animate-star"></i>
+                        <i class="fa-solid fa-star text-amber-100 text-sm absolute top-12 left-1/3 animate-star-fast"></i>
+                        <i class="fa-solid fa-star text-amber-200 text-xs absolute bottom-6 left-1/2 animate-star"></i>
+                        <i class="fa-solid fa-star text-slate-200 text-xs absolute top-8 right-1/3 animate-star-fast"></i>
+                    </div>
+                </div>
+
+                <!-- Banner Header Content -->
+                <div class="relative z-10 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-white/20 backdrop-blur-md border border-white/30 tracking-wider uppercase text-white shadow-sm">
+                                大氣環境模擬 (Meowpoet/brightness)
+                            </span>
+                            <span id="skyStateBadge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-amber-400/30 text-amber-100 border border-amber-300/40">
+                                藍天白雲 (Daylight)
+                            </span>
+                        </div>
+                        <div class="mt-2 flex items-baseline gap-2">
+                            <span id="skyBrightnessVal" class="text-4xl font-extrabold tracking-tight drop-shadow">3500</span>
+                            <span class="text-sm font-medium text-white/80">/ 4096 Lux</span>
+                        </div>
+                    </div>
+
+                    <!-- Atmospheric Description Text -->
+                    <div id="skyDescBox" class="bg-black/20 backdrop-blur-md border border-white/10 rounded-xl p-3 text-xs max-w-xs text-white/90 shadow-inner">
+                        <i class="fa-solid fa-circle-info text-amber-300 mr-1"></i>
+                        <span id="skyDescText">光照極佳，陽光充沛，呈溫暖明亮之日間氛圍。</span>
+                    </div>
+                </div>
+
+                <!-- Simulation Slider Override Bar -->
+                <div class="relative z-10 mt-4 pt-3 border-t border-white/20 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                    <div class="flex items-center gap-2 w-full sm:w-auto">
+                        <i class="fa-solid fa-sliders text-white/80"></i>
+                        <span class="font-medium whitespace-nowrap text-white/90">手動模擬滑桿 (0 - 4096):</span>
+                    </div>
+                    <div class="flex items-center gap-3 w-full sm:w-2/3">
+                        <span class="text-[10px] text-white/70 font-mono">0 (黑夜)</span>
+                        <input type="range" id="brightnessSlider" min="0" max="4096" value="3500" 
+                            class="w-full accent-amber-300 cursor-pointer h-1.5 bg-black/30 rounded-lg">
+                        <span class="text-[10px] text-white/70 font-mono">4096 (強光)</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Air Quality Monitor Component (CO2 Based) -->
+            <div id="airQualityCard" class="bg-gradient-to-r from-slate-800 via-slate-800 to-slate-800/90 border border-slate-700 rounded-xl p-5 shadow-lg transition-all duration-300 relative overflow-hidden">
+                <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                    <div class="flex items-center gap-4">
+                        <div id="aqiEmojiContainer" class="text-5xl sm:text-6xl p-3 bg-slate-900/60 border border-slate-700/80 rounded-2xl shadow-inner flex items-center justify-center shrink-0">
+                            <span id="aqiEmoji" class="animate-emoji">❓</span>
+                        </div>
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">空氣質素監測 (CO2 依據)</h2>
+                                <span id="aqiBadge" class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-700 text-slate-300">
+                                    等待數據...
+                                </span>
+                            </div>
+                            <div class="mt-1 flex items-baseline gap-2">
+                                <span id="aqiCo2Val" class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">--</span>
+                                <span class="text-xs font-medium text-slate-400">ppm</span>
+                            </div>
+                            <p id="aqiAdvice" class="text-xs text-slate-400 mt-1 flex items-center gap-1.5">
+                                <i class="fa-solid fa-circle-info text-slate-500"></i>
+                                <span>訂閱 Meowpoet/co2 自動更新環境健康狀態。</span>
+                            </p>
+                        </div>
+                    </div>
+                    
+                    <!-- Air Quality Scale Bar -->
+                    <div class="w-full sm:w-64 bg-slate-900/80 p-3 rounded-lg border border-slate-700/60 text-[11px] space-y-1.5 self-stretch flex flex-col justify-center">
+                        <div class="flex justify-between text-slate-400 font-medium">
+                            <span>CO2 濃度指標</span>
+                            <span id="aqiPercentLabel" class="text-indigo-400">-- %</span>
+                        </div>
+                        <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden flex">
+                            <div class="w-[30%] bg-emerald-500 opacity-60"></div>
+                            <div class="w-[20%] bg-amber-400 opacity-60"></div>
+                            <div class="w-[25%] bg-orange-500 opacity-60"></div>
+                            <div class="w-[25%] bg-rose-600 opacity-60"></div>
+                        </div>
+                        <div class="flex justify-between text-[10px] text-slate-500 font-mono">
+                            <span>400</span>
+                            <span>1000</span>
+                            <span>1500</span>
+                            <span>2000+</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sensor Summary Mini Cards -->
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3" id="cardsContainer">
+                <!-- Brightness -->
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-3.5 shadow-md flex flex-col">
+                    <span class="text-xs font-medium text-slate-400">亮度 (Brightness)</span>
+                    <div class="flex items-baseline space-x-1 my-1">
+                        <span class="text-xl font-bold text-amber-400" id="val-brightness">3500</span>
+                        <span class="text-[10px] text-slate-500">lux</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-auto pt-1 border-t border-slate-700/50">時間: <span id="time-brightness">-</span></span>
+                </div>
+
+                <!-- Light Switch -->
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-3.5 shadow-md flex flex-col">
+                    <span class="text-xs font-medium text-slate-400">光照開關 (Light)</span>
+                    <div class="flex items-baseline space-x-1 my-1">
+                        <span class="text-xl font-bold text-yellow-400" id="val-light">OFF</span>
+                        <span class="text-[10px] text-slate-500">state</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-auto pt-1 border-t border-slate-700/50">時間: <span id="time-light">-</span></span>
+                </div>
+
+                <!-- Temperature -->
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-3.5 shadow-md flex flex-col">
+                    <span class="text-xs font-medium text-slate-400">溫度 (Temperature)</span>
+                    <div class="flex items-baseline space-x-1 my-1">
+                        <span class="text-xl font-bold text-rose-400" id="val-temperature">--</span>
+                        <span class="text-[10px] text-slate-500">°C</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-auto pt-1 border-t border-slate-700/50">時間: <span id="time-temperature">-</span></span>
+                </div>
+
+                <!-- Pressure (hPa) -->
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-3.5 shadow-md flex flex-col">
+                    <span class="text-xs font-medium text-slate-400">氣壓 (hPa)</span>
+                    <div class="flex items-baseline space-x-1 my-1">
+                        <span class="text-xl font-bold text-sky-400" id="val-hpa">--</span>
+                        <span class="text-[10px] text-slate-500">hPa</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-auto pt-1 border-t border-slate-700/50">時間: <span id="time-hpa">-</span></span>
+                </div>
+
+                <!-- CO2 -->
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-3.5 shadow-md flex flex-col">
+                    <span class="text-xs font-medium text-slate-400">二氧化碳 (CO2)</span>
+                    <div class="flex items-baseline space-x-1 my-1">
+                        <span class="text-xl font-bold text-emerald-400" id="val-co2">--</span>
+                        <span class="text-[10px] text-slate-500">ppm</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-auto pt-1 border-t border-slate-700/50">時間: <span id="time-co2">-</span></span>
+                </div>
+            </div>
+
+            <!-- Two Circular Gauges (Temperature & Pressure) -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-md flex flex-col items-center justify-between">
+                    <div class="w-full flex justify-between items-center mb-1">
+                        <h3 class="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
+                            <i class="fa-solid fa-temperature-half"></i> 溫度圓形儀表板 (°C)
+                        </h3>
+                        <span class="text-[10px] text-slate-500">範圍: -10 ~ 50 °C</span>
+                    </div>
+                    <div class="relative w-48 h-48 flex items-center justify-center my-2">
+                        <canvas id="gaugeTemp"></canvas>
+                        <div class="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none mt-2">
+                            <span id="gaugeTempDisplay" class="text-2xl font-extrabold text-rose-400">--</span>
+                            <span class="text-[10px] text-slate-400 font-medium">°C</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-md flex flex-col items-center justify-between">
+                    <div class="w-full flex justify-between items-center mb-1">
+                        <h3 class="text-xs font-semibold text-sky-400 flex items-center gap-1.5">
+                            <i class="fa-solid fa-gauge text-sky-400"></i> 氣壓圓形儀表板 (hPa)
+                        </h3>
+                        <span class="text-[10px] text-slate-500">範圍: 900 ~ 1100 hPa</span>
+                    </div>
+                    <div class="relative w-48 h-48 flex items-center justify-center my-2">
+                        <canvas id="gaugeHpa"></canvas>
+                        <div class="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none mt-2">
+                            <span id="gaugeHpaDisplay" class="text-2xl font-extrabold text-sky-400">--</span>
+                            <span class="text-[10px] text-slate-400 font-medium">hPa</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2x2 Grid of 4 Line Charts -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1">
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-md flex flex-col justify-between">
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 class="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
+                            <i class="fa-solid fa-temperature-high"></i> 溫度趨勢 (Temperature)
+                        </h3>
+                        <span class="text-[10px] text-slate-500">上限 10 筆</span>
+                    </div>
+                    <div class="h-44 relative w-full">
+                        <canvas id="chartTemp"></canvas>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-md flex flex-col justify-between">
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 class="text-xs font-semibold text-sky-400 flex items-center gap-1.5">
+                            <i class="fa-solid fa-gauge-high"></i> 大氣壓力 (hPa)
+                        </h3>
+                        <span class="text-[10px] text-slate-500">上限 10 筆</span>
+                    </div>
+                    <div class="h-44 relative w-full">
+                        <canvas id="chartHpa"></canvas>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-md flex flex-col justify-between">
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 class="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                            <i class="fa-solid fa-smog"></i> 二氧化碳 (CO2 ppm)
+                        </h3>
+                        <span class="text-[10px] text-slate-500">上限 10 筆</span>
+                    </div>
+                    <div class="h-44 relative w-full">
+                        <canvas id="chartCo2"></canvas>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-md flex flex-col justify-between">
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 class="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                            <i class="fa-solid fa-sun"></i> 環境亮度 (Brightness)
+                        </h3>
+                        <span class="text-[10px] text-slate-500">上限 10 筆</span>
+                    </div>
+                    <div class="h-44 relative w-full">
+                        <canvas id="chartBrightness"></canvas>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </main>
+
+    <script>
+        let client = null;
+        
+        const charts = {};
+        const gauges = {};
+        
+        const subscriptionPattern = 'Meowpoet/#';
+        const MAX_DATA_POINTS = 10;
+
+        // Auto Light Control States
+        let currentLightState = 'OFF'; // Track ON or OFF
+        let autoLightEnabled = false;
+        let autoLightThreshold = 1000;
+
+        // Chart Helpers
+        function createChartConfig(label, color, bgColor) {
+            return {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: label,
+                        data: [],
+                        borderColor: color,
+                        backgroundColor: bgColor,
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 3,
+                        pointHoverRadius: 6,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(51, 65, 85, 0.4)' },
+                            ticks: { color: '#94a3b8', font: { size: 10 } }
+                        },
+                        y: {
+                            grid: { color: 'rgba(51, 65, 85, 0.4)' },
+                            ticks: { color: '#94a3b8', font: { size: 10 } }
+                        }
+                    }
+                }
+            };
+        }
+
+        function createGaugeConfig(activeColor, backgroundColor) {
+            return {
+                type: 'doughnut',
+                data: {
+                    labels: ['Value', 'Remaining'],
+                    datasets: [{
+                        data: [0, 100],
+                        backgroundColor: [activeColor, backgroundColor],
+                        borderWidth: 0,
+                        hoverOffset: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    rotation: 225,
+                    circumference: 270,
+                    cutout: '80%',
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { enabled: false }
+                    }
+                }
+            };
+        }
+
+        function initChartsAndGauges() {
+            charts.temperature = new Chart(
+                document.getElementById('chartTemp').getContext('2d'),
+                createChartConfig('溫度 (°C)', '#fb7185', 'rgba(251, 113, 133, 0.15)')
+            );
+
+            charts.hpa = new Chart(
+                document.getElementById('chartHpa').getContext('2d'),
+                createChartConfig('氣壓 (hPa)', '#38bdf8', 'rgba(56, 189, 248, 0.15)')
+            );
+
+            charts.co2 = new Chart(
+                document.getElementById('chartCo2').getContext('2d'),
+                createChartConfig('CO2 (ppm)', '#34d399', 'rgba(52, 211, 153, 0.15)')
+            );
+
+            charts.brightness = new Chart(
+                document.getElementById('chartBrightness').getContext('2d'),
+                createChartConfig('亮度 (Lux)', '#fbbf24', 'rgba(251, 191, 36, 0.15)')
+            );
+
+            gauges.temperature = new Chart(
+                document.getElementById('gaugeTemp').getContext('2d'),
+                createGaugeConfig('#fb7185', 'rgba(51, 65, 85, 0.5)')
+            );
+
+            gauges.hpa = new Chart(
+                document.getElementById('gaugeHpa').getContext('2d'),
+                createGaugeConfig('#38bdf8', 'rgba(51, 65, 85, 0.5)')
+            );
+        }
+
+        function updateSkyAtmosphere(brightnessVal) {
+            const val = Math.min(Math.max(Number(brightnessVal) || 0, 0), 4096);
+
+            const banner = document.getElementById('skyBanner');
+            const badge = document.getElementById('skyStateBadge');
+            const valText = document.getElementById('skyBrightnessVal');
+            const descText = document.getElementById('skyDescText');
+            const slider = document.getElementById('brightnessSlider');
+
+            const dayLayer = document.getElementById('skyDayLayer');
+            const twilightLayer = document.getElementById('skyTwilightLayer');
+            const nightLayer = document.getElementById('skyNightLayer');
+
+            valText.textContent = Math.round(val);
+            if (slider && document.activeElement !== slider) {
+                slider.value = val;
+            }
+
+            // High Brightness (3000 - 4096): Bright Blue Sky with Clouds
+            if (val >= 3000) {
+                banner.className = "sky-transition bg-gradient-to-r from-sky-500 via-blue-500 to-indigo-600 border border-sky-300/40 rounded-2xl p-6 shadow-xl shadow-sky-500/10 relative overflow-hidden text-white min-h-[170px] flex flex-col justify-between";
+                badge.textContent = "藍天白雲 (Daylight)";
+                badge.className = "text-xs font-semibold px-2.5 py-0.5 rounded-full bg-white/30 text-white border border-white/40 shadow-sm";
+                descText.textContent = "光照充足，陽光普照。藍天白雲呈清爽明亮之日間大氣景色。";
+
+                dayLayer.style.opacity = "1";
+                twilightLayer.style.opacity = "0";
+                nightLayer.style.opacity = "0";
+            }
+            // Medium Brightness (1000 - 2999): Sunset / Twilight Golden Glow
+            else if (val >= 1000) {
+                banner.className = "sky-transition bg-gradient-to-r from-amber-600 via-orange-600 to-purple-800 border border-amber-400/40 rounded-2xl p-6 shadow-xl shadow-orange-500/10 relative overflow-hidden text-white min-h-[170px] flex flex-col justify-between";
+                badge.textContent = "黃昏 / 晨曦 (Twilight)";
+                badge.className = "text-xs font-semibold px-2.5 py-0.5 rounded-full bg-amber-400/30 text-amber-100 border border-amber-300/40 shadow-sm";
+                descText.textContent = "光線柔和漸暗。天邊呈現金黃與紫紅交織之黃昏霞光氛圍。";
+
+                dayLayer.style.opacity = "0";
+                twilightLayer.style.opacity = "1";
+                nightLayer.style.opacity = "0";
+            }
+            // Low Brightness (0 - 999): Deep Night Starry Sky
+            else {
+                banner.className = "sky-transition bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-900 border border-indigo-500/30 rounded-2xl p-6 shadow-xl shadow-indigo-950/40 relative overflow-hidden text-white min-h-[170px] flex flex-col justify-between";
+                badge.textContent = "黑夜星空 (Night)";
+                badge.className = "text-xs font-semibold px-2.5 py-0.5 rounded-full bg-indigo-500/30 text-indigo-200 border border-indigo-400/40 shadow-sm";
+                descText.textContent = "進入沉靜黑夜。夜幕低垂，明月高掛伴隨繁星閃爍。";
+
+                dayLayer.style.opacity = "0";
+                twilightLayer.style.opacity = "0";
+                nightLayer.style.opacity = "1";
+            }
+        }
+
+        // CO2 Air Quality Monitor Updates
+        function updateAirQuality(co2Value) {
+            const emojiElem = document.getElementById('aqiEmoji');
+            const badgeElem = document.getElementById('aqiBadge');
+            const co2ValElem = document.getElementById('aqiCo2Val');
+            const adviceElem = document.getElementById('aqiAdvice');
+            const cardElem = document.getElementById('airQualityCard');
+            const percentElem = document.getElementById('aqiPercentLabel');
+
+            if (!co2ValElem) return;
+
+            co2ValElem.textContent = Math.round(co2Value);
+            const percent = Math.min(Math.max(Math.round(((co2Value - 400) / (2500 - 400)) * 100), 0), 100);
+            if (percentElem) percentElem.textContent = `${percent}%`;
+
+            let emoji = '😊', label = '空氣優良', badgeStyle = 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30', cardBg = 'from-emerald-950/20 via-slate-800 to-slate-800', advice = '空氣極佳，維持良好通風。';
+
+            if (co2Value < 600) {
+                emoji = '😊'; label = '空氣優良 / Excellent';
+            } else if (co2Value <= 1000) {
+                emoji = '🙂'; label = '空氣良好 / Good';
+                badgeStyle = 'bg-teal-500/20 text-teal-300 border border-teal-500/30';
+                cardBg = 'from-teal-950/30 via-slate-800 to-slate-800';
+            } else if (co2Value <= 1500) {
+                emoji = '😐'; label = '空氣普通 / Moderate';
+                badgeStyle = 'bg-amber-500/20 text-amber-400 border border-amber-500/30';
+                cardBg = 'from-amber-950/30 via-slate-800 to-slate-800';
+                advice = '二氧化碳濃度稍高，建議開啟窗戶保持通風。';
+            } else if (co2Value <= 2000) {
+                emoji = '😷'; label = '空氣不佳 / Unhealthy';
+                badgeStyle = 'bg-rose-500/20 text-rose-400 border border-rose-500/30';
+                cardBg = 'from-rose-950/30 via-slate-800 to-slate-800';
+                advice = 'CO2過高！請立刻開啟抽風機或改善換氣。';
+            } else {
+                emoji = '😵'; label = '極度惡劣 / Hazardous';
+                badgeStyle = 'bg-purple-500/20 text-purple-300 border border-purple-500/40 animate-pulse';
+                cardBg = 'from-purple-950/40 via-slate-800 to-slate-800';
+                advice = '危險高濃度！請立即進行強制換氣通風！';
+            }
+
+            emojiElem.textContent = emoji;
+            badgeElem.textContent = label;
+            badgeElem.className = `px-2.5 py-0.5 rounded-full text-xs font-semibold ${badgeStyle}`;
+            adviceElem.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-amber-400"></i> <span>${advice}</span>`;
+            cardElem.className = `bg-gradient-to-r ${cardBg} border border-slate-700 rounded-xl p-5 shadow-lg transition-all duration-300 relative overflow-hidden`;
+        }
+
+        // Circular Gauges Helpers
+        function updateTempGauge(value) {
+            const min = -10, max = 50;
+            const percentage = Math.min(Math.max(((value - min) / (max - min)) * 100, 0), 100);
+            if (gauges.temperature) {
+                gauges.temperature.data.datasets[0].data = [percentage, 100 - percentage];
+                gauges.temperature.update();
+            }
+            const displayElem = document.getElementById('gaugeTempDisplay');
+            if (displayElem) displayElem.textContent = Number.isInteger(value) ? value : value.toFixed(1);
+        }
+
+        function updateHpaGauge(value) {
+            const min = 900, max = 1100;
+            const percentage = Math.min(Math.max(((value - min) / (max - min)) * 100, 0), 100);
+            if (gauges.hpa) {
+                gauges.hpa.data.datasets[0].data = [percentage, 100 - percentage];
+                gauges.hpa.update();
+            }
+            const displayElem = document.getElementById('gaugeHpaDisplay');
+            if (displayElem) displayElem.textContent = Number.isInteger(value) ? value : value.toFixed(1);
+        }
+
+        function pushChartData(chartInstance, labelTime, value) {
+            if (!chartInstance) return;
+            const labels = chartInstance.data.labels;
+            const dataset = chartInstance.data.datasets[0].data;
+
+            labels.push(labelTime);
+            dataset.push(value);
+
+            if (labels.length > MAX_DATA_POINTS) {
+                labels.shift();
+                dataset.shift();
+            }
+            chartInstance.update();
+        }
+
+        function appendLog(type, message) {
+            const container = document.getElementById('logContainer');
+            const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+            const logItem = document.createElement('div');
+            
+            let prefixColor = 'text-slate-400';
+            if (type === 'SYSTEM') prefixColor = 'text-sky-400 font-semibold';
+            else if (type.includes('AUTO')) prefixColor = 'text-amber-400 font-semibold';
+            else if (type.startsWith('PUB') || type.startsWith('CONTROL')) prefixColor = 'text-purple-400 font-semibold';
+            else prefixColor = 'text-emerald-400';
+
+            logItem.innerHTML = `<span class="text-slate-500">[${timeStr}]</span> <span class="${prefixColor}">${escapeHtml(type)}</span>: <span class="text-slate-300 break-all">${escapeHtml(message)}</span>`;
+            container.appendChild(logItem);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        function updateUIState(state) {
+            const indicator = document.getElementById('statusIndicator');
+            const text = document.getElementById('statusText');
+            
+            const btnConnect = document.getElementById('connectBtn');
+            const btnDisconnect = document.getElementById('disconnectBtn');
+            const btnPublish = document.getElementById('publishBtn');
+            const btnLightOn = document.getElementById('btnLightOn');
+            const btnLightOff = document.getElementById('btnLightOff');
+
+            const activeButtons = [btnDisconnect, btnPublish, btnLightOn, btnLightOff];
+
+            if (state === 'connected') {
+                indicator.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]';
+                text.textContent = '已連線';
+                text.className = 'text-emerald-400';
+                
+                btnConnect.disabled = true;
+                activeButtons.forEach(btn => btn.disabled = false);
+            } else if (state === 'connecting') {
+                indicator.className = 'w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse';
+                text.textContent = '連線中...';
+                text.className = 'text-amber-400';
+            } else {
+                indicator.className = 'w-2.5 h-2.5 rounded-full bg-rose-500';
+                text.textContent = '未連線';
+                text.className = 'text-slate-400';
+                
+                btnConnect.disabled = false;
+                activeButtons.forEach(btn => btn.disabled = true);
+            }
+        }
+
+        // Automatic Light Control Logic Trigger
+        function checkAutoLightControl(brightnessValue) {
+            if (!autoLightEnabled) return;
+
+            // Decision logic:
+            // If Brightness < Threshold AND Light is currently OFF -> TURN ON
+            // If Brightness >= Threshold AND Light is currently ON -> TURN OFF
+            if (brightnessValue < autoLightThreshold && currentLightState !== 'ON') {
+                appendLog('🤖 [AUTO LIGHT]', `檢測到亮度 (${brightnessValue}) 低於門檻 (${autoLightThreshold})，自動觸發開燈 (ON)`);
+                executePublish('Meowpoet/light', 'on', 'AUTO');
+            } 
+            else if (brightnessValue >= autoLightThreshold && currentLightState !== 'OFF') {
+                appendLog('🤖 [AUTO LIGHT]', `檢測到亮度 (${brightnessValue}) 達到/高於門檻 (${autoLightThreshold})，自動觸發關燈 (OFF)`);
+                executePublish('Meowpoet/light', 'off', 'AUTO');
+            }
+        }
+
+        // MQTT Connection Management
+        document.getElementById('connectionForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const brokerUrl = document.getElementById('brokerUrl').value.trim();
+            const clientId = document.getElementById('clientId').value.trim() || 'js_client_' + Math.random().toString(16).substr(2, 8);
+
+            if (!brokerUrl) return alert('請填寫 Broker URL');
+
+            updateUIState('connecting');
+            appendLog('SYSTEM', `連線中: ${brokerUrl}`);
+
+            if (client && client.connected) {
+                client.end();
+            }
+
+            try {
+                client = mqtt.connect(brokerUrl, {
+                    clientId: clientId,
+                    clean: true,
+                    connectTimeout: 5000,
+                });
+
+                client.on('connect', function() {
+                    updateUIState('connected');
+                    appendLog('SYSTEM', '連線成功！');
+                    
+                    client.subscribe(subscriptionPattern, function(err) {
+                        if (err) appendLog('SYSTEM', '訂閱失敗: ' + err.message);
+                        else appendLog('SYSTEM', `已訂閱話題: ${subscriptionPattern}`);
+                    });
+                });
+
+                client.on('message', function(topic, payload) {
+                    const msgString = payload.toString();
+                    appendLog(topic, msgString);
+                    processIncomingData(topic, msgString);
+                });
+
+                client.on('error', function(err) {
+                    appendLog('SYSTEM', '錯誤: ' + err.message);
+                });
+
+                client.on('close', function() {
+                    if (document.getElementById('statusText').textContent !== '未連線') {
+                        appendLog('SYSTEM', '連線斷開');
+                        updateUIState('disconnected');
+                    }
+                });
+
+            } catch (err) {
+                appendLog('SYSTEM', '連線異常: ' + err.message);
+                updateUIState('disconnected');
+            }
+        });
+
+        document.getElementById('disconnectBtn').addEventListener('click', function() {
+            if (client) {
+                client.end(true, () => {
+                    appendLog('SYSTEM', '已主動斷開連線');
+                    updateUIState('disconnected');
+                });
+            }
+        });
+
+        function processIncomingData(topic, msgString) {
+            let numericVal = null;
+            const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+
+            if (!isNaN(Number(msgString))) {
+                numericVal = Number(msgString);
+            } else {
+                try {
+                    const jsonObj = JSON.parse(msgString);
+                    if (jsonObj.value !== undefined) numericVal = Number(jsonObj.value);
+                } catch(e) {}
+            }
+
+            if (topic === 'Meowpoet/brightness') {
+                updateCard('brightness', numericVal !== null ? numericVal : msgString, timeStr);
+                if (numericVal !== null) {
+                    pushChartData(charts.brightness, timeStr, numericVal);
+                    updateSkyAtmosphere(numericVal);
+                    checkAutoLightControl(numericVal);
+                }
+            } 
+            else if (topic === 'Meowpoet/temperature') {
+                updateCard('temperature', numericVal !== null ? numericVal : msgString, timeStr);
+                if (numericVal !== null) {
+                    pushChartData(charts.temperature, timeStr, numericVal);
+                    updateTempGauge(numericVal);
+                }
+            } 
+            else if (topic === 'Meowpoet/hpa') {
+                updateCard('hpa', numericVal !== null ? numericVal : msgString, timeStr);
+                if (numericVal !== null) {
+                    pushChartData(charts.hpa, timeStr, numericVal);
+                    updateHpaGauge(numericVal);
+                }
+            } 
+            else if (topic === 'Meowpoet/co2') {
+                updateCard('co2', numericVal !== null ? numericVal : msgString, timeStr);
+                if (numericVal !== null) {
+                    pushChartData(charts.co2, timeStr, numericVal);
+                    updateAirQuality(numericVal);
+                }
+            } 
+            else if (topic === 'Meowpoet/light') {
+                const stateUpper = msgString.toUpperCase();
+                currentLightState = stateUpper.includes('ON') ? 'ON' : (stateUpper.includes('OFF') ? 'OFF' : stateUpper);
+                
+                // Update Light Tag
+                const tag = document.getElementById('lightStateTag');
+                if (tag) {
+                    tag.textContent = `狀態: ${currentLightState}`;
+                    tag.className = currentLightState === 'ON' 
+                        ? 'text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 uppercase'
+                        : 'text-[10px] font-bold px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30 uppercase';
+                }
+                updateCard('light', currentLightState, timeStr);
+            }
+        }
+
+        function updateCard(metricId, displayValue, timeStr) {
+            const valElem = document.getElementById(`val-${metricId}`);
+            const timeElem = document.getElementById(`time-${metricId}`);
+            if (valElem) {
+                valElem.textContent = typeof displayValue === 'number' ? (Number.isInteger(displayValue) ? displayValue : displayValue.toFixed(1)) : displayValue;
+            }
+            if (timeElem) timeElem.textContent = timeStr;
+        }
+
+        // Custom Publish Form
+        document.getElementById('publishForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const topic = document.getElementById('pubTopic').value.trim();
+            const payload = document.getElementById('pubPayload').value;
+            
+            if (!topic) return alert('請輸入 Topic');
+            executePublish(topic, payload, 'PUB');
+        });
+
+        // Light Switches
+        document.getElementById('btnLightOn').addEventListener('click', () => executePublish('Meowpoet/light', 'on', 'CONTROL'));
+        document.getElementById('btnLightOff').addEventListener('click', () => executePublish('Meowpoet/light', 'off', 'CONTROL'));
+
+        function executePublish(topic, payload, logType) {
+            if (!client || !client.connected) {
+                return alert('尚未連線 MQTT Broker！');
+            }
+            client.publish(topic, payload, function(err) {
+                if (err) appendLog('SYSTEM', '發布失敗: ' + err.message);
+                else appendLog(`${logType} -> ${topic}`, payload);
+            });
+        }
+
+        // Clear Logs
+        document.getElementById('clearLogsBtn').addEventListener('click', function() {
+            document.getElementById('logContainer').innerHTML = '<div class="text-slate-500">日誌已清空。</div>';
+        });
+
+        // Brightness Override Slider Event
+        document.getElementById('brightnessSlider').addEventListener('input', function(e) {
+            const simVal = Number(e.target.value);
+            updateSkyAtmosphere(simVal);
+            updateCard('brightness', simVal, '手動模擬');
+            checkAutoLightControl(simVal);
+        });
+
+        // Auto Light Control Listeners
+        document.getElementById('autoLightToggle').addEventListener('change', function(e) {
+            autoLightEnabled = e.target.checked;
+            appendLog('SYSTEM', `自動燈控功能: ${autoLightEnabled ? '【開啟】' : '【關閉】'}`);
+            
+            // Check immediately when turned on using current brightness
+            if (autoLightEnabled) {
+                const currentBr = Number(document.getElementById('val-brightness').textContent) || 3500;
+                checkAutoLightControl(currentBr);
+            }
+        });
+
+        document.getElementById('autoThresholdInput').addEventListener('input', function(e) {
+            autoLightThreshold = Number(e.target.value);
+            document.getElementById('autoThresholdDisplay').textContent = autoLightThreshold;
+        });
+
+        // Initial setup
+        window.onload = function() {
+            initChartsAndGauges();
+            document.getElementById('clientId').value = 'dashboard_' + Math.floor(Math.random() * 10000);
+            updateSkyAtmosphere(3500);
+        };
+    </script>
+</body>
+</html>
